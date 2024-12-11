@@ -2,22 +2,19 @@ package global.alyssa.hl7mllpdemo.listener;
 
 import ca.uhn.hl7v2.HL7Exception;
 import ca.uhn.hl7v2.model.Message;
-import ca.uhn.hl7v2.model.v23.group.ORU_R01_OBSERVATION;
-import ca.uhn.hl7v2.model.v23.group.ORU_R01_ORDER_OBSERVATION;
-import ca.uhn.hl7v2.model.v23.group.ORU_R01_PATIENT;
-import ca.uhn.hl7v2.model.v23.message.ORU_R01;
-import ca.uhn.hl7v2.model.v23.segment.MSH;
-import ca.uhn.hl7v2.model.v23.segment.OBR;
-import ca.uhn.hl7v2.model.v23.segment.OBX;
-import ca.uhn.hl7v2.model.v23.segment.PID;
 import ca.uhn.hl7v2.parser.PipeParser;
+import global.alyssa.hl7mllpdemo.processor.HL7MessageProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+@Component
 public class HL7MLLPListener implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(HL7MLLPListener.class);
@@ -26,10 +23,13 @@ public class HL7MLLPListener implements Runnable {
     private static final char END_BLOCK = 0x1C;   // End of HL7 message
     private static final char CARRIAGE_RETURN = 0x0D; // Carriage return
 
+    private final HL7MessageProcessor processor;
     private final int port;
 
-    public HL7MLLPListener(int port) {
+    @Autowired
+    public HL7MLLPListener(@Value("${hl7.listener.port}") int port, HL7MessageProcessor processor) {
         this.port = port;
+        this.processor = processor;
     }
 
     @Override
@@ -61,7 +61,7 @@ public class HL7MLLPListener implements Runnable {
             Message parsedMessage = parser.parse(sanitizeHL7Message(hl7Message));
 
             if (parsedMessage != null) {
-                parseHL7Message(parsedMessage);
+                processor.processMessage(parsedMessage); // Delegate to the processor
                 String ackMessage = generateAckMessage(parsedMessage);
                 sendAcknowledgment(outputStream, ackMessage, clientSocket);
             } else {
@@ -88,46 +88,6 @@ public class HL7MLLPListener implements Runnable {
             hl7Message = hl7Message.substring(0, hl7Message.length() - 2); // Strip End Block and Carriage Return
         }
         return hl7Message;
-    }
-
-    private void parseHL7Message(Message message) {
-        try {
-            if (message instanceof ORU_R01 oruMessage) {
-                processORUMessage(oruMessage);
-            } else {
-                log.warn("Unsupported message type: {}", message.getName());
-            }
-        } catch (Exception e) {
-            log.error("Error processing HL7 message", e);
-        }
-    }
-
-    private void processORUMessage(ORU_R01 oruMessage) {
-        try {
-            MSH msh = oruMessage.getMSH();
-            log.info("Processing ORU_R01: Message Control ID = {}", msh.getMessageControlID().getValue());
-
-            ORU_R01_PATIENT patient = oruMessage.getRESPONSE().getPATIENT();
-            PID pid = patient.getPID();
-            String patientId = pid.getPatientIDInternalID(0).getID().getValue();
-            log.info("Patient ID (PID-3): {}", patientId);
-
-            ORU_R01_ORDER_OBSERVATION orderObservation = oruMessage.getRESPONSE().getORDER_OBSERVATION();
-            OBR obr = orderObservation.getOBR();
-            log.info("Observation Request ID (OBR-1): {}", obr.getSetIDObservationRequest().getValue());
-
-            for (int i = 0; i < orderObservation.getOBSERVATIONReps(); i++) {
-                ORU_R01_OBSERVATION observation = orderObservation.getOBSERVATION(i);
-                OBX obx = observation.getOBX();
-                log.info("Observation [{}]: {} = {} {}",
-                        i + 1,
-                        obx.getObservationIdentifier().getIdentifier().getValue(),
-                        obx.getObservationValue(0).getData().encode(),
-                        obx.getUnits().encode());
-            }
-        } catch (Exception e) {
-            log.error("Failed to process ORU_R01 message", e);
-        }
     }
 
     private String generateAckMessage(Message incomingMessage) {
