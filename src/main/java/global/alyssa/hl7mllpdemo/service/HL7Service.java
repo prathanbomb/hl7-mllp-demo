@@ -16,6 +16,9 @@ public class HL7Service {
     private ObjectMapper objectMapper;
 
     public String processHL7Message(String hl7Message) throws Exception {
+        // Normalize HL7 message
+        hl7Message = processor.normalizeHL7Message(hl7Message);
+
         // Parse HL7 message
         PipeParser parser = new PipeParser();
         Message parsedMessage = parser.parse(hl7Message);

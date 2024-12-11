@@ -64,6 +64,14 @@ public class HL7MessageProcessor {
         }
     }
 
+    public String normalizeHL7Message(String hl7Message) {
+        // If the message contains \n but not \r, replace \n with \r
+        if (hl7Message.contains("\n") && !hl7Message.contains("\r")) {
+            return hl7Message.replace("\n", "\r");
+        }
+        return hl7Message;
+    }
+
     public Map<String, Object> extractMessageData(Message message) throws HL7Exception {
         Map<String, Object> messageData = new HashMap<>();
 
