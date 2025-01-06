@@ -2,6 +2,7 @@ package global.alyssa.hl7mllpdemo.listener;
 
 import ca.uhn.hl7v2.HL7Exception;
 import ca.uhn.hl7v2.model.Message;
+import ca.uhn.hl7v2.model.Segment;
 import ca.uhn.hl7v2.parser.PipeParser;
 import global.alyssa.hl7mllpdemo.processor.HL7MessageProcessor;
 import org.slf4j.Logger;
@@ -13,6 +14,8 @@ import org.springframework.stereotype.Component;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 @Component
 public class HL7MLLPListener implements Runnable {
@@ -70,10 +73,12 @@ public class HL7MLLPListener implements Runnable {
             Message parsedMessage = parseHL7Message(hl7Message);
 
             if (parsedMessage != null) {
+                String controlId = extractControlId(parsedMessage);
                 processor.processMessage(parsedMessage);
-                sendAcknowledgment(outputStream, generateAckMessage(parsedMessage), clientSocket);
+                sendAcknowledgment(outputStream, generateAckMessage(parsedMessage, controlId), clientSocket);
             } else {
-                log.warn("Failed to parse HL7 message. No acknowledgment sent.");
+                log.warn("Failed to parse HL7 message. Sending default error acknowledgment.");
+                sendAcknowledgment(outputStream, manuallyConstructDefaultErrorAck("UNKNOWN"), clientSocket);
             }
         } catch (Exception e) {
             log.error("Error processing client connection", e);
@@ -114,18 +119,55 @@ public class HL7MLLPListener implements Runnable {
         }
     }
 
-    private String generateAckMessage(Message incomingMessage) {
+    private String extractControlId(Message message) {
         try {
-            Message ack = incomingMessage.generateACK();
-            return START_BLOCK + ack.encode() + END_BLOCK + CARRIAGE_RETURN;
+            // Access the MSH segment from the message
+            Segment mshSegment = (Segment) message.get("MSH");
+            // Retrieve MSH-10 (Message Control ID)
+            return mshSegment.getField(10, 0).toString(); // Field 10, first repetition
         } catch (Exception e) {
-            log.error("Error generating acknowledgment message", e);
-            return createDefaultErrorAck();
+            log.warn("Failed to extract Control ID from message. Using fallback value.", e);
+            return "UNKNOWN";
         }
     }
 
-    private String createDefaultErrorAck() {
-        return START_BLOCK + "MSH|^~\\&|ACK||202201011200||ACK^A01|123|P|2.3\rMSA|AE|123" + END_BLOCK + CARRIAGE_RETURN;
+    private String generateAckMessage(Message incomingMessage, String controlId) {
+        try {
+            // Generate a success acknowledgment
+            Message ack = incomingMessage.generateACK();
+            return START_BLOCK + ack.encode() + END_BLOCK + CARRIAGE_RETURN;
+        } catch (HL7Exception|IOException e) {
+            log.error("Error generating acknowledgment message. Creating default error ACK.", e);
+            return manuallyConstructDefaultErrorAck(controlId);
+        }
+    }
+
+    private String manuallyConstructDefaultErrorAck(String controlId) {
+        try {
+            if (controlId == null || controlId.isEmpty()) {
+                controlId = "UNKNOWN";
+            }
+
+            StringBuilder ackBuilder = new StringBuilder();
+
+            // MSH segment
+            ackBuilder.append("MSH|^~\\&|ACK_SOURCE|ACK_DEST|")
+                    .append(getCurrentTimestamp()).append("|")
+                    .append("ACK||ACK^A01|")
+                    .append(controlId).append("|P|2.3\r");
+
+            // MSA segment
+            ackBuilder.append("MSA|AE|").append(controlId).append("|Application Error\r");
+
+            return START_BLOCK + ackBuilder.toString() + END_BLOCK + CARRIAGE_RETURN;
+        } catch (Exception e) {
+            log.error("Error constructing manual default ACK", e);
+            return START_BLOCK + "MSH|^~\\&|ACK||202201011200||ACK^A01|UNKNOWN|P|2.3\rMSA|AE|UNKNOWN" + END_BLOCK + CARRIAGE_RETURN;
+        }
+    }
+
+    private String getCurrentTimestamp() {
+        return new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
     }
 
     private void sendAcknowledgment(OutputStream outputStream, String ackMessage, Socket clientSocket) {
