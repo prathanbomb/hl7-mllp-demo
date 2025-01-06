@@ -38,35 +38,45 @@ public class HL7MLLPListener implements Runnable {
             log.info("MLLP Listener started on port {}", port);
 
             while (true) {
-                try (Socket clientSocket = serverSocket.accept()) {
-                    log.info("Connection from {}", clientSocket.getRemoteSocketAddress());
-                    processClientConnection(clientSocket);
-                } catch (Exception e) {
-                    log.error("Error handling client connection", e);
-                }
+                handleClientConnection(serverSocket);
             }
         } catch (IOException e) {
             log.error("Failed to start MLLP Listener on port {}", port, e);
         }
     }
 
-    private void processClientConnection(Socket clientSocket) throws IOException, HL7Exception {
+    private void handleClientConnection(ServerSocket serverSocket) {
+        try (Socket clientSocket = serverSocket.accept()) {
+            log.info("Connection established with {}", clientSocket.getRemoteSocketAddress());
+            processClientConnection(clientSocket);
+        } catch (Exception e) {
+            log.error("Error handling client connection", e);
+        }
+    }
+
+    private void processClientConnection(Socket clientSocket) {
         try (InputStream inputStream = clientSocket.getInputStream();
              OutputStream outputStream = clientSocket.getOutputStream()) {
 
             String hl7Message = readHL7Message(inputStream);
-            log.debug("Raw HL7 Message: {}", hl7Message);
+            log.debug("Received raw HL7 message: {}", hl7Message);
 
-            PipeParser parser = new PipeParser();
-            Message parsedMessage = parser.parse(sanitizeHL7Message(hl7Message));
+            if (hl7Message == null || hl7Message.isBlank()) {
+                log.warn("Empty or invalid HL7 message received. No acknowledgment sent.");
+                return;
+            }
+
+            hl7Message = processor.normalizeHL7Message(hl7Message);
+            Message parsedMessage = parseHL7Message(hl7Message);
 
             if (parsedMessage != null) {
-                processor.processMessage(parsedMessage); // Delegate to the processor
-                String ackMessage = generateAckMessage(parsedMessage);
-                sendAcknowledgment(outputStream, ackMessage, clientSocket);
+                processor.processMessage(parsedMessage);
+                sendAcknowledgment(outputStream, generateAckMessage(parsedMessage), clientSocket);
             } else {
-                log.warn("Received invalid HL7 message. No acknowledgment sent.");
+                log.warn("Failed to parse HL7 message. No acknowledgment sent.");
             }
+        } catch (Exception e) {
+            log.error("Error processing client connection", e);
         }
     }
 
@@ -77,10 +87,14 @@ public class HL7MLLPListener implements Runnable {
             if (character == END_BLOCK) break; // End of message
             messageBuilder.append((char) character);
         }
-        return messageBuilder.toString();
+        return sanitizeHL7Message(messageBuilder.toString());
     }
 
     private String sanitizeHL7Message(String hl7Message) {
+        if (hl7Message == null || hl7Message.isEmpty()) {
+            return null;
+        }
+        hl7Message = hl7Message.strip();
         if (hl7Message.charAt(0) == START_BLOCK) {
             hl7Message = hl7Message.substring(1); // Strip Start Block
         }
@@ -90,20 +104,38 @@ public class HL7MLLPListener implements Runnable {
         return hl7Message;
     }
 
+    private Message parseHL7Message(String hl7Message) {
+        try {
+            PipeParser parser = new PipeParser();
+            return parser.parse(hl7Message);
+        } catch (HL7Exception e) {
+            log.error("Error parsing HL7 message", e);
+            return null;
+        }
+    }
+
     private String generateAckMessage(Message incomingMessage) {
         try {
             Message ack = incomingMessage.generateACK();
             return START_BLOCK + ack.encode() + END_BLOCK + CARRIAGE_RETURN;
         } catch (Exception e) {
             log.error("Error generating acknowledgment message", e);
-            return START_BLOCK + "MSH|^~\\&|ACK||202201011200||ACK^A01|123|P|2.3\rMSA|AE|123" + END_BLOCK + CARRIAGE_RETURN;
+            return createDefaultErrorAck();
         }
     }
 
-    private void sendAcknowledgment(OutputStream outputStream, String ackMessage, Socket clientSocket) throws IOException {
-        log.info("Sending ACK to {}", clientSocket.getRemoteSocketAddress());
-        outputStream.write(ackMessage.getBytes());
-        outputStream.flush();
-        log.debug("ACK sent successfully.");
+    private String createDefaultErrorAck() {
+        return START_BLOCK + "MSH|^~\\&|ACK||202201011200||ACK^A01|123|P|2.3\rMSA|AE|123" + END_BLOCK + CARRIAGE_RETURN;
+    }
+
+    private void sendAcknowledgment(OutputStream outputStream, String ackMessage, Socket clientSocket) {
+        try {
+            log.info("Sending ACK to {}", clientSocket.getRemoteSocketAddress());
+            outputStream.write(ackMessage.getBytes());
+            outputStream.flush();
+            log.debug("ACK sent successfully.");
+        } catch (IOException e) {
+            log.error("Error sending acknowledgment", e);
+        }
     }
 }
