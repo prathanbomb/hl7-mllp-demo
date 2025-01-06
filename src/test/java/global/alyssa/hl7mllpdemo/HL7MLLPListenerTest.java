@@ -32,7 +32,7 @@ class HL7MLLPListenerTest {
         HL7MessageProcessor messageProcessor = new HL7MessageProcessor();
 
         // Call the method under test
-        messageProcessor.processORUMessage(oruMessage);
+        messageProcessor.extractMessageData(oruMessage);
 
         // Assertions for key fields
         // MSH Assertions

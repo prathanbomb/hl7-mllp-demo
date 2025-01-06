@@ -1,119 +1,150 @@
 package global.alyssa.hl7mllpdemo.processor;
 
 import ca.uhn.hl7v2.HL7Exception;
+import ca.uhn.hl7v2.model.Composite;
 import ca.uhn.hl7v2.model.Message;
-import ca.uhn.hl7v2.model.v23.group.ORU_R01_OBSERVATION;
+import ca.uhn.hl7v2.model.Primitive;
+import ca.uhn.hl7v2.model.Type;
 import ca.uhn.hl7v2.model.v23.group.ORU_R01_ORDER_OBSERVATION;
-import ca.uhn.hl7v2.model.v23.group.ORU_R01_PATIENT;
 import ca.uhn.hl7v2.model.v23.message.ORU_R01;
 import ca.uhn.hl7v2.model.v23.segment.MSH;
-import ca.uhn.hl7v2.model.v23.segment.OBR;
 import ca.uhn.hl7v2.model.v23.segment.OBX;
 import ca.uhn.hl7v2.model.v23.segment.PID;
+import ca.uhn.hl7v2.parser.PipeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Component
 public class HL7MessageProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(HL7MessageProcessor.class);
 
-    public void processMessage(Message message) {
-        if (message instanceof ORU_R01 oruMessage) {
-            processORUMessage(oruMessage);
-        } else {
-            log.warn("Unsupported message type: {}", message.getName());
-        }
-    }
+    private static final char START_BLOCK = 0x0B;
+    private static final char END_BLOCK = 0x1C;
+    private static final char CARRIAGE_RETURN = 0x0D;
 
-    public void processORUMessage(ORU_R01 oruMessage) {
+    public String processMessage(String hl7Message) {
         try {
-            // Process MSH Segment
-            MSH msh = oruMessage.getMSH();
-            log.info("Processing ORU_R01: Message Control ID = {}", msh.getMessageControlID().getValue());
+            PipeParser parser = new PipeParser();
+            Message message = parser.parse(hl7Message);
+            Map<String, Object> messageData = extractMessageData(message);
 
-            // Process PID Segment
-            ORU_R01_PATIENT patient = oruMessage.getRESPONSE().getPATIENT();
-            PID pid = patient.getPID();
-            String patientId = pid.getPatientIDInternalID(0).getID().getValue();
-            log.info("Patient ID (PID-3): {}", patientId);
+            logMessageDetails(messageData);
 
-            // Process OBR Segment
-            ORU_R01_ORDER_OBSERVATION orderObservation = oruMessage.getRESPONSE().getORDER_OBSERVATION();
-            OBR obr = orderObservation.getOBR();
-            log.info("Observation Request ID (OBR-1): {}", obr.getSetIDObservationRequest().getValue());
-
-            // Process OBX Segments
-            for (int i = 0; i < orderObservation.getOBSERVATIONReps(); i++) {
-                ORU_R01_OBSERVATION observation = orderObservation.getOBSERVATION(i);
-                OBX obx = observation.getOBX();
-                log.info("Observation [{}]: {} = {} {}",
-                        i + 1,
-                        obx.getObservationIdentifier().getIdentifier().getValue(),
-                        obx.getObservationValue(0).getData().encode(),
-                        obx.getUnits().encode());
-            }
-        } catch (Exception e) {
-            log.error("Failed to process ORU_R01 message", e);
+            return generateAckMessage(message, messageData.get("messageControlId").toString());
+        } catch (HL7Exception e) {
+            log.error("Failed to process message", e);
+            return manuallyConstructDefaultErrorAck("UNKNOWN");
         }
     }
 
-    public String normalizeHL7Message(String hl7Message) {
-        // If the message contains \n but not \r, replace \n with \r
-        if (hl7Message.contains("\n") && !hl7Message.contains("\r")) {
-            return hl7Message.replace("\n", "\r");
+    private void logMessageDetails(Map<String, Object> messageData) {
+        log.info("Processing Message: Control ID = {}", messageData.get("messageControlId"));
+        log.info("Patient ID: {}", messageData.get("patientId"));
+
+        List<Map<String, String>> observations = (List<Map<String, String>>) messageData.get("observations");
+        for (int i = 0; i < observations.size(); i++) {
+            Map<String, String> observation = observations.get(i);
+            log.info("Observation [{}]: {} = {} {}",
+                    i + 1,
+                    observation.get("type"),
+                    observation.get("value"),
+                    observation.get("units"));
         }
-        return hl7Message;
     }
 
     public Map<String, Object> extractMessageData(Message message) throws HL7Exception {
-        Map<String, Object> messageData = new HashMap<>();
-
-        if (message instanceof ORU_R01 oruMessage) {
-            // Extract MSH Segment
-            MSH msh = oruMessage.getMSH();
-            messageData.put("messageControlId", msh.getMessageControlID().getValue());
-            messageData.put("sendingApplication", msh.getSendingApplication().getNamespaceID().getValue());
-            messageData.put("sendingFacility", msh.getSendingFacility().getNamespaceID().getValue());
-            messageData.put("receivingApplication", msh.getReceivingApplication().getNamespaceID().getValue());
-            messageData.put("receivingFacility", msh.getReceivingFacility().getNamespaceID().getValue());
-            messageData.put("dateTimeOfMessage", msh.getDateTimeOfMessage().encode());
-
-            // Extract PID Segment
-            ORU_R01_PATIENT patient = oruMessage.getRESPONSE().getPATIENT();
-            PID pid = patient.getPID();
-            messageData.put("patientId", pid.getPatientIDInternalID(0).getID().getValue());
-
-            // Extract Observations (OBX Segments)
-            ORU_R01_ORDER_OBSERVATION orderObservation = oruMessage.getRESPONSE().getORDER_OBSERVATION();
-            List<Map<String, String>> observations = new ArrayList<>();
-
-            for (int i = 0; i < orderObservation.getOBSERVATIONReps(); i++) {
-                ORU_R01_OBSERVATION observation = orderObservation.getOBSERVATION(i);
-                OBX obx = observation.getOBX();
-
-                Map<String, String> observationData = new HashMap<>();
-                observationData.put("type", obx.getObservationIdentifier().getIdentifier().getValue());
-                observationData.put("value", obx.getObservationValue(0).getData().encode());
-                observationData.put("units", obx.getUnits().encode());
-                observationData.put("observationDateTime", obx.getDateTimeOfTheObservation().encode());
-
-                observations.add(observationData);
-            }
-
-            messageData.put("observations", observations);
-
-        } else {
-            log.warn("Unsupported message type: {}", message.getName());
+        if (!(message instanceof ORU_R01 oruMessage)) {
             throw new HL7Exception("Unsupported message type: " + message.getName());
         }
 
+        Map<String, Object> messageData = new HashMap<>();
+        MSH msh = oruMessage.getMSH();
+
+        messageData.put("messageControlId", getFieldValue(msh.getMessageControlID()));
+        messageData.put("sendingApplication", getFieldValue(msh.getSendingApplication().getNamespaceID()));
+        messageData.put("sendingFacility", getFieldValue(msh.getSendingFacility().getNamespaceID()));
+        messageData.put("receivingApplication", getFieldValue(msh.getReceivingApplication().getNamespaceID()));
+        messageData.put("receivingFacility", getFieldValue(msh.getReceivingFacility().getNamespaceID()));
+        messageData.put("dateTimeOfMessage", getFieldValue(msh.getDateTimeOfMessage()));
+
+        PID pid = oruMessage.getRESPONSE().getPATIENT().getPID();
+        messageData.put("patientId", getFieldValue(pid.getPatientIDInternalID(0).getID()));
+
+        messageData.put("observations", extractObservations(oruMessage));
         return messageData;
+    }
+
+    private List<Map<String, String>> extractObservations(ORU_R01 oruMessage) {
+        List<Map<String, String>> observations = new ArrayList<>();
+        ORU_R01_ORDER_OBSERVATION orderObservation = oruMessage.getRESPONSE().getORDER_OBSERVATION();
+
+        for (int i = 0; i < orderObservation.getOBSERVATIONReps(); i++) {
+            try {
+                OBX obx = orderObservation.getOBSERVATION(i).getOBX();
+                Map<String, String> observationData = new HashMap<>();
+                observationData.put("type", getFieldValue(obx.getObservationIdentifier().getIdentifier()));
+                observationData.put("value", getFieldValue(obx.getObservationValue(0).getData()));
+                observationData.put("units", getFieldValue(obx.getUnits()));
+                observationData.put("observationDateTime", getFieldValue(obx.getDateTimeOfTheObservation()));
+                observations.add(observationData);
+            } catch (Exception e) {
+                log.warn("Failed to extract OBX segment data at index {}", i, e);
+            }
+        }
+
+        return observations;
+    }
+
+    public String normalizeHL7Message(String hl7Message) {
+        return hl7Message != null && hl7Message.contains("\n") && !hl7Message.contains("\r")
+                ? hl7Message.replace("\n", "\r")
+                : hl7Message;
+    }
+
+    private String getFieldValue(Type field) {
+        if (field == null) return "";
+        try {
+            if (field instanceof Primitive primitive) {
+                return primitive.getValue() != null ? primitive.getValue() : "";
+            } else if (field instanceof Composite composite) {
+                return Arrays.stream(composite.getComponents())
+                        .map(this::getFieldValue)
+                        .filter(value -> !value.isEmpty())
+                        .collect(Collectors.joining(" "));
+            }
+            return field.encode();
+        } catch (HL7Exception e) {
+            log.warn("Failed to encode field", e);
+            return "";
+        }
+    }
+
+    private String generateAckMessage(Message incomingMessage, String controlId) {
+        try {
+            Message ack = incomingMessage.generateACK();
+            return START_BLOCK + ack.encode() + END_BLOCK + CARRIAGE_RETURN;
+        } catch (Exception e) {
+            log.error("Error generating acknowledgment message", e);
+            return manuallyConstructDefaultErrorAck(controlId);
+        }
+    }
+
+    private String manuallyConstructDefaultErrorAck(String controlId) {
+        controlId = controlId != null && !controlId.isEmpty() ? controlId : "UNKNOWN";
+        return START_BLOCK +
+                String.format("MSH|^~\\&|ACK_SOURCE|ACK_DEST|%s|ACK||ACK^A01|%s|P|2.3\rMSA|AE|%s|Application Error\r",
+                        getCurrentTimestamp(), controlId, controlId) +
+                END_BLOCK + CARRIAGE_RETURN;
+    }
+
+    private String getCurrentTimestamp() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
     }
 }
