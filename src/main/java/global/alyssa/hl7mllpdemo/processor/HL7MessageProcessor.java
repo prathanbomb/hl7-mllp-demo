@@ -13,8 +13,13 @@ import ca.uhn.hl7v2.model.v23.segment.PID;
 import ca.uhn.hl7v2.parser.PipeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -33,8 +38,22 @@ public class HL7MessageProcessor {
         try {
             PipeParser parser = new PipeParser();
             Message message = parser.parse(hl7Message);
-            Map<String, Object> messageData = extractMessageData(message);
 
+            String baseDirectory = "vital_signs/";
+            File directory = new File(baseDirectory);
+            if (!directory.exists()) {
+                directory.mkdirs();
+            }
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_nnnnnnnnn"));
+            String fileName = "hl7_message_" + timestamp + ".txt";
+            String fullFilePath = Paths.get(baseDirectory, fileName).toString();
+            try (FileWriter writer = new FileWriter(fullFilePath)) {
+                writer.write(message.encode());
+            } catch (IOException fileException) {
+                log.error("Failed to write HL7 message to file", fileException);
+            }
+
+            Map<String, Object> messageData = extractMessageData(message);
             logMessageDetails(messageData);
 
             return generateAckMessage(message, messageData.get("messageControlId").toString());
